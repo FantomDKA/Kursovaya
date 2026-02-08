@@ -1,0 +1,541 @@
+/**
+ * @file HedgeCalculator.cpp
+ * @brief Программа для расчёта эффективности хеджирования валютных рисков
+ * @version 1.0.0
+ * @date 2025-01-27
+ * @author Кабацкий Д.А., группа УИБО-14-24
+ */
+
+#include <iostream>
+#include <string>
+#include <cmath>
+#include <iomanip>
+#include <vector>
+#include <algorithm>
+#include <stdexcept>
+#include <limits>
+#include <ctime>
+
+using namespace std;
+
+// ==================== КЛАСС ДЛЯ ВАЛИДАЦИИ ВВОДА ====================
+
+/**
+ * @class InputValidator
+ * @brief Класс для проверки корректности входных данных
+ */
+class InputValidator {
+public:
+    /**
+     * @brief Проверяет, находится ли значение в заданном диапазоне
+     * @param value Проверяемое значение
+     * @param min Минимальное допустимое значение
+     * @param max Максимальное допустимое значение
+     * @return true если значение корректно, false в противном случае
+     */
+    static bool validateRange(double value, double min, double max) {
+        return (value >= min && value <= max);
+    }
+
+    /**
+     * @brief Проверяет положительное значение
+     * @param value Проверяемое значение
+     * @return true если значение положительное
+     */
+    static bool validatePositive(double value) {
+        return value > 0;
+    }
+
+    /**
+     * @brief Проверяет корректность валютного значения
+     * @param value Проверяемое значение
+     * @return true если значение может быть валютным
+     */
+    static bool validateCurrency(double value) {
+        return !isnan(value) && !isinf(value) && value >= 0;
+    }
+};
+
+// ==================== КЛАСС ДЛЯ ХРАНЕНИЯ ПАРАМЕТРОВ ====================
+
+/**
+ * @class HedgeParameters
+ * @brief Класс для хранения параметров хеджирования
+ */
+class HedgeParameters {
+private:
+    double exportAmount;      ///< Сумма экспорта
+    double currentRate;       ///< Текущий спот-курс
+    double coefficientRate;   ///< Коэффициент курса
+    double volatility;        ///< Годовая волатильность
+    double hedgingCost;       ///< Стоимость хеджирования
+
+public:
+    // Конструктор с параметрами
+    HedgeParameters(double expAmt, double currRate, double coeffRate, 
+                   double vol, double hedgeCost) 
+        : exportAmount(expAmt), currentRate(currRate), 
+          coefficientRate(coeffRate), volatility(vol), 
+          hedgingCost(hedgeCost) {}
+
+    // Геттеры
+    double getExportAmount() const { return exportAmount; }
+    double getCurrentRate() const { return currentRate; }
+    double getCoefficientRate() const { return coefficientRate; }
+    double getVolatility() const { return volatility; }
+    double getHedgingCost() const { return hedgingCost; }
+
+    /**
+     * @brief Проверяет корректность всех параметров
+     * @return true если все параметры корректны
+     * @throw invalid_argument если параметры некорректны
+     */
+    bool validate() const {
+        if (!InputValidator::validateRange(exportAmount, 0.01, 1e12)) {
+            throw invalid_argument("Сумма экспорта должна быть от 0.01 до 10^12");
+        }
+        
+        if (!InputValidator::validateRange(currentRate, 0.0001, 1e6)) {
+            throw invalid_argument("Текущий курс должен быть от 0.0001 до 10^6");
+        }
+        
+        if (!InputValidator::validateRange(coefficientRate, 0.0001, 1e6)) {
+            throw invalid_argument("Коэффициент курса должен быть от 0.0001 до 10^6");
+        }
+        
+        if (!InputValidator::validateRange(volatility, 0, 5)) {
+            throw invalid_argument("Волатильность должна быть от 0 до 5");
+        }
+        
+        if (!InputValidator::validateRange(hedgingCost, 0, 1e12)) {
+            throw invalid_argument("Стоимость хеджирования должна быть от 0 до 10^12");
+        }
+        
+        return true;
+    }
+};
+
+// ==================== КЛАСС ДЛЯ РАСЧЁТА РЕЗУЛЬТАТОВ ====================
+
+/**
+ * @class HedgeCalculator
+ * @brief Класс для расчёта эффективности хеджирования
+ */
+class HedgeCalculator {
+private:
+    HedgeParameters params;   ///< Параметры расчёта
+
+public:
+    /**
+     * @brief Конструктор класса
+     * @param parameters Параметры для расчёта
+     */
+    HedgeCalculator(const HedgeParameters& parameters) 
+        : params(parameters) {
+        params.validate();
+    }
+
+    /**
+     * @brief Рассчитывает потенциальные потери без хеджирования
+     * @param z Квантиль нормального распределения (по умолчанию 1.96 для 95%)
+     * @return Потенциальные потери
+     */
+    double calculatePotentialLoss(double z = 1.96) const {
+        return params.getExportAmount() * params.getVolatility() * z;
+    }
+
+    /**
+     * @brief Рассчитывает эффективность хеджирования
+     * @return Эффективность в процентах (0-100)
+     */
+    double calculateEfficiency() const {
+        double potentialLoss = calculatePotentialLoss();
+        
+        if (potentialLoss <= 0) {
+            return 0.0;
+        }
+        
+        double efficiency = (1 - params.getHedgingCost() / potentialLoss) * 100;
+        
+        // Ограничиваем диапазон 0-100%
+        return max(0.0, min(100.0, efficiency));
+    }
+
+    /**
+     * @brief Рассчитывает оптимальный объём хеджирования
+     * @return Оптимальный объём в процентах (0-100)
+     */
+    double calculateOptimalVolume() const {
+        double potentialLoss = calculatePotentialLoss();
+        
+        if (potentialLoss <= 0) {
+            return 0.0;
+        }
+        
+        // Упрощённая модель на основе коэффициента Шарпа
+        double riskFreeRate = 0.03; // Безрисковая ставка 3%
+        double riskPremium = potentialLoss - params.getHedgingCost();
+        double risk = potentialLoss * 0.15; // Предполагаемое стандартное отклонение
+        
+        if (risk <= 0) {
+            return 50.0; // Значение по умолчанию
+        }
+        
+        double sharpeRatio = (riskPremium - riskFreeRate) / risk;
+        double optimalVolume = 50.0 + (sharpeRatio * 25.0);
+        
+        // Ограничиваем диапазон 0-100%
+        return max(0.0, min(100.0, optimalVolume));
+    }
+
+    /**
+     * @brief Рассчитывает экономию от хеджирования
+     * @return Экономия в денежных единицах
+     */
+    double calculateSavings() const {
+        double potentialLoss = calculatePotentialLoss();
+        double optimalVolume = calculateOptimalVolume();
+        
+        return potentialLoss * (optimalVolume / 100.0) - params.getHedgingCost();
+    }
+
+    /**
+     * @brief Рассчитывает стоимость хеджирования
+     * @return Стоимость хеджирования
+     */
+    double calculateHedgingCost() const {
+        return params.getHedgingCost();
+    }
+
+    /**
+     * @brief Выводит результаты расчёта в консоль
+     */
+    void printResults() const {
+        double efficiency = calculateEfficiency();
+        double savings = calculateSavings();
+        double optimalVolume = calculateOptimalVolume();
+        double hedgingCost = calculateHedgingCost();
+        
+        cout << fixed << setprecision(2);
+        cout << "\n========== РЕЗУЛЬТАТЫ РАСЧЁТА ==========" << endl;
+        cout << "Эффективность хеджирования: " << efficiency << "%" << endl;
+        cout << "Экономия: " << savings << " руб." << endl;
+        cout << "Оптимальный объём хеджирования: " << optimalVolume << "%" << endl;
+        cout << "Стоимость хеджирования: " << hedgingCost << " руб." << endl;
+        cout << "========================================" << endl;
+    }
+};
+
+// ==================== КЛАСС ДЛЯ ТЕСТИРОВАНИЯ ====================
+
+/**
+ * @class HedgeTester
+ * @brief Класс для тестирования функционала калькулятора
+ */
+class HedgeTester {
+private:
+    vector<pair<string, bool>> testResults; ///< Результаты тестов
+
+public:
+    /**
+     * @brief Выполняет все тесты
+     */
+    void runAllTests() {
+        cout << "\n========== ТЕСТИРОВАНИЕ ПРОГРАММЫ ==========" << endl;
+        
+        testPositiveCases();
+        testNegativeCases();
+        testBoundaryCases();
+        testPerformance();
+        
+        printTestSummary();
+    }
+
+private:
+    /**
+     * @brief Тестирует корректные случаи
+     */
+    void testPositiveCases() {
+        cout << "\n--- Тест 1: Корректные данные ---" << endl;
+        
+        try {
+            HedgeParameters params1(1000000, 75.5, 76.0, 0.1, 50000);
+            HedgeCalculator calc1(params1);
+            
+            double eff1 = calc1.calculateEfficiency();
+            bool test1 = (eff1 > 0 && eff1 <= 100);
+            
+            recordTest("Корректные данные (Пример 1)", test1);
+            
+            HedgeParameters params2(500000, 90.2, 89.8, 0.08, 15000);
+            HedgeCalculator calc2(params2);
+            
+            double eff2 = calc2.calculateEfficiency();
+            bool test2 = (eff2 > 0 && eff2 <= 100);
+            
+            recordTest("Корректные данные (Пример 2)", test2);
+            
+        } catch (const exception& e) {
+            recordTest("Корректные данные", false);
+            cout << "Ошибка: " << e.what() << endl;
+        }
+    }
+
+    /**
+     * @brief Тестирует некорректные случаи
+     */
+    void testNegativeCases() {
+        cout << "\n--- Тест 2: Некорректные данные ---" << endl;
+        
+        vector<pair<string, HedgeParameters>> negativeTests = {
+            {"Отрицательная сумма", HedgeParameters(-1000, 75.5, 76.0, 0.1, 50000)},
+            {"Некорректная волатильность", HedgeParameters(1000000, 75.5, 76.0, 10, 50000)},
+            {"Отрицательная стоимость", HedgeParameters(1000000, 75.5, 76.0, 0.1, -50000)}
+        };
+        
+        for (const auto& test : negativeTests) {
+            try {
+                test.second.validate();
+                recordTest(test.first, false);
+                cout << "Тест не прошёл: " << test.first << endl;
+            } catch (const invalid_argument&) {
+                recordTest(test.first, true);
+            }
+        }
+    }
+
+    /**
+     * @brief Тестирует граничные значения
+     */
+    void testBoundaryCases() {
+        cout << "\n--- Тест 3: Граничные значения ---" << endl;
+        
+        try {
+            // Минимальные значения
+            HedgeParameters paramsMin(0.01, 0.0001, 0.0001, 0, 0);
+            HedgeCalculator calcMin(paramsMin);
+            
+            bool testMin = (calcMin.calculateEfficiency() == 0);
+            recordTest("Минимальные значения", testMin);
+            
+            // Максимальные значения
+            HedgeParameters paramsMax(1e12, 1e6, 1e6, 5, 1e12);
+            HedgeCalculator calcMax(paramsMax);
+            
+            bool testMax = (calcMax.calculateEfficiency() >= 0);
+            recordTest("Максимальные значения", testMax);
+            
+        } catch (const exception& e) {
+            recordTest("Граничные значения", false);
+            cout << "Ошибка: " << e.what() << endl;
+        }
+    }
+
+    /**
+     * @brief Тестирует производительность
+     */
+    void testPerformance() {
+        cout << "\n--- Тест 4: Производительность ---" << endl;
+        
+        try {
+            clock_t start = clock();
+            
+            // Выполняем 10000 расчётов
+            for (int i = 0; i < 10000; i++) {
+                HedgeParameters params(1000000 + i, 75.5, 76.0, 0.1, 50000);
+                HedgeCalculator calc(params);
+                calc.calculateEfficiency();
+            }
+            
+            clock_t end = clock();
+            double duration = double(end - start) / CLOCKS_PER_SEC;
+            
+            bool performanceTest = (duration < 1.0); // Должно выполняться менее 1 секунды
+            recordTest("Производительность (10000 итераций)", performanceTest);
+            
+            cout << "Время выполнения: " << duration << " секунд" << endl;
+            
+        } catch (const exception& e) {
+            recordTest("Производительность", false);
+            cout << "Ошибка: " << e.what() << endl;
+        }
+    }
+
+    /**
+     * @brief Записывает результат теста
+     * @param testName Название теста
+     * @param result Результат теста
+     */
+    void recordTest(const string& testName, bool result) {
+        testResults.push_back({testName, result});
+        cout << (result ? "✓ " : "✗ ") << testName << endl;
+    }
+
+    /**
+     * @brief Выводит сводку по тестам
+     */
+    void printTestSummary() {
+        int passed = count_if(testResults.begin(), testResults.end(),
+                            [](const auto& test) { return test.second; });
+        int total = testResults.size();
+        
+        cout << "\n========== ИТОГИ ТЕСТИРОВАНИЯ ==========" << endl;
+        cout << "Всего тестов: " << total << endl;
+        cout << "Пройдено: " << passed << endl;
+        cout << "Не пройдено: " << (total - passed) << endl;
+        cout << "Успешность: " << (passed * 100 / total) << "%" << endl;
+        
+        if (passed == total) {
+            cout << "✓ ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!" << endl;
+        } else {
+            cout << "✗ ЕСТЬ ПРОБЛЕМЫ В РАБОТЕ ПРОГРАММЫ" << endl;
+            
+            // Выводим неудавшиеся тесты
+            cout << "\nНеудавшиеся тесты:" << endl;
+            for (const auto& test : testResults) {
+                if (!test.second) {
+                    cout << "  - " << test.first << endl;
+                }
+            }
+        }
+        cout << "========================================" << endl;
+    }
+};
+
+// ==================== ФУНКЦИИ ВВОДА/ВЫВОДА ====================
+
+/**
+ * @brief Запрашивает у пользователя ввод параметров
+ * @return Объект HedgeParameters с введёнными данными
+ */
+HedgeParameters inputParameters() {
+    double exportAmount, currentRate, coefficientRate, volatility, hedgingCost;
+    
+    cout << "\n========== ВВОД ПАРАМЕТРОВ ХЕДЖИРОВАНИЯ ==========" << endl;
+    
+    cout << "Введите сумму экспорта (0.01 - 1e12): ";
+    cin >> exportAmount;
+    
+    cout << "Введите текущий спот-курс (0.0001 - 1e6): ";
+    cin >> currentRate;
+    
+    cout << "Введите коэффициент курса (0.0001 - 1e6): ";
+    cin >> coefficientRate;
+    
+    cout << "Введите годовую волатильность курса (0 - 5): ";
+    cin >> volatility;
+    
+    cout << "Введите стоимость хеджирования (0 - 1e12): ";
+    cin >> hedgingCost;
+    
+    cout << "=================================================" << endl;
+    
+    return HedgeParameters(exportAmount, currentRate, coefficientRate, 
+                          volatility, hedgingCost);
+}
+
+/**
+ * @brief Отображает главное меню программы
+ */
+void showMenu() {
+    cout << "\n========== ГЛАВНОЕ МЕНЮ ==========" << endl;
+    cout << "1. Выполнить расчёт" << endl;
+    cout << "2. Запустить тестирование" << endl;
+    cout << "3. Показать справку" << endl;
+    cout << "4. Выход" << endl;
+    cout << "==================================" << endl;
+    cout << "Выберите действие (1-4): ";
+}
+
+/**
+ * @brief Отображает справку по программе
+ */
+void showHelp() {
+    cout << "\n========== СПРАВКА ПО ПРОГРАММЕ ==========" << endl;
+    cout << "Программа для расчёта эффективности хеджирования валютных рисков" << endl;
+    cout << "\nИспользуемые алгоритмы:" << endl;
+    cout << "1. Расчёт потенциальных потерь: сумма * волатильность * z" << endl;
+    cout << "2. Эффективность: (1 - стоимость/потери) * 100%" << endl;
+    cout << "3. Оптимальный объём: на основе коэффициента Шарпа" << endl;
+    cout << "\nТехнические характеристики:" << endl;
+    cout << "- Язык: C++17" << endl;
+    cout << "- Стандартная библиотека: STL" << endl;
+    cout << "- Обработка исключений: try-catch" << endl;
+    cout << "- Паттерны: OOP, валидация входных данных" << endl;
+    cout << "==========================================" << endl;
+}
+
+// ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
+
+/**
+ * @brief Главная функция программы
+ * @return Код завершения программы
+ */
+int main() {
+    // Устанавливаем русскую локаль для корректного вывода
+    setlocale(LC_ALL, "Russian");
+    
+    cout << "========================================================" << endl;
+    cout << " КАЛЬКУЛЯТОР ЭФФЕКТИВНОСТИ ХЕДЖИРОВАНИЯ ВАЛЮТНЫХ РИСКОВ " << endl;
+    cout << "                   Версия 1.0.0 (C++)                   " << endl;
+    cout << "========================================================" << endl;
+    
+    int choice = 0;
+    bool running = true;
+    
+    while (running) {
+        showMenu();
+        cin >> choice;
+        
+        try {
+            switch (choice) {
+                case 1: {
+                    // Режим расчёта
+                    HedgeParameters params = inputParameters();
+                    HedgeCalculator calculator(params);
+                    calculator.printResults();
+                    break;
+                }
+                
+                case 2: {
+                    // Режим тестирования
+                    HedgeTester tester;
+                    tester.runAllTests();
+                    break;
+                }
+                
+                case 3: {
+                    // Справка
+                    showHelp();
+                    break;
+                }
+                
+                case 4: {
+                    // Выход
+                    cout << "\nСпасибо за использование программы!" << endl;
+                    cout << "До новых встреч!" << endl;
+                    running = false;
+                    break;
+                }
+                
+                default: {
+                    cout << "Ошибка! Пожалуйста, выберите действие от 1 до 4." << endl;
+                    break;
+                }
+            }
+        } catch (const invalid_argument& e) {
+            cout << "\nОШИБКА ВВОДА: " << e.what() << endl;
+            cout << "Пожалуйста, повторите ввод корректных данных." << endl;
+        } catch (const exception& e) {
+            cout << "\nНЕПРЕДВИДЕННАЯ ОШИБКА: " << e.what() << endl;
+            cout << "Программа будет завершена." << endl;
+            return 1;
+        }
+        
+        // Очищаем буфер ввода
+        cin.clear();
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    }
+    
+    return 0;
+}
