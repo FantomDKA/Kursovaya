@@ -1,11 +1,3 @@
-/**
- * @file HedgeCalculator.cpp
- * @brief Программа для расчёта эффективности хеджирования валютных рисков
- * @version 1.0.0
- * @date 2025-01-27
- * @author Кабацкий Д.А., группа УИБО-14-24
- */
-
 #include <iostream>
 #include <string>
 #include <cmath>
